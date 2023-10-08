@@ -76,8 +76,8 @@ type Processor[T any] struct {
 type ProcessResult uint8
 
 const (
-	Nack ProcessResult = iota
-	Ack
+	ProcessResultNack ProcessResult = iota
+	ProcessResultAck
 )
 
 type ProcessFunc[T any] func(ctx context.Context, msg T) ProcessResult
@@ -95,7 +95,9 @@ func NewProcessor[T any](c sqsClienter, config ProcessorConfig) *Processor[T] {
 }
 
 func (p *Processor[T]) Errors() <-chan error {
-	p.errs = make(chan error)
+	if p.errs == nil {
+		p.errs = make(chan error)
+	}
 	return p.errs
 }
 
@@ -198,7 +200,7 @@ func (p *Processor[T]) cleanup(ctx context.Context) {
 				continue
 			}
 			switch res.ProcessResult {
-			case Ack:
+			case ProcessResultAck:
 				fmt.Printf("got result %v\n", res)
 				_, err := p.client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
 					QueueUrl:      p.config.Receive.QueueUrl,
@@ -209,7 +211,7 @@ func (p *Processor[T]) cleanup(ctx context.Context) {
 						p.errs <- err
 					}
 				}
-			case Nack:
+			case ProcessResultNack:
 				// logging?
 
 				// make message instantly visible again

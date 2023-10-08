@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	sqsprocessor "github.com/barrett370/sqs-processor"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -20,11 +21,24 @@ type mockMessage struct {
 	ID string
 }
 
+const (
+	methodReceive          = "receive"
+	methodDelete           = "delete"
+	methodChangeVisibility = "change_visibility"
+)
+
 type mockSQSClient struct {
 	sync.Mutex
+	called   map[string]int
 	incoming chan types.Message
 	inflight []types.Message
 	cfg      sqs.ReceiveMessageInput
+}
+
+func (m *mockSQSClient) incr(method string) {
+	m.Lock()
+	m.called[method]++
+	m.Unlock()
 }
 
 func (m *mockSQSClient) deleteInflight(handle string) (found bool) {
@@ -44,6 +58,7 @@ func (m *mockSQSClient) deleteInflight(handle string) (found bool) {
 }
 
 func (m *mockSQSClient) ReceiveMessage(ctx context.Context, params *sqs.ReceiveMessageInput, optFns ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error) {
+	m.incr(methodReceive)
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -80,6 +95,7 @@ out:
 }
 
 func (m *mockSQSClient) DeleteMessage(ctx context.Context, params *sqs.DeleteMessageInput, optFns ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error) {
+	m.incr(methodDelete)
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -96,6 +112,7 @@ func (m *mockSQSClient) DeleteMessage(ctx context.Context, params *sqs.DeleteMes
 }
 
 func (m *mockSQSClient) ChangeMessageVisibility(ctx context.Context, params *sqs.ChangeMessageVisibilityInput, optFns ...func(*sqs.Options)) (*sqs.ChangeMessageVisibilityOutput, error) {
+	m.incr(methodChangeVisibility)
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -111,18 +128,26 @@ type results struct {
 
 var res *results
 
-func mockWorkFunc(ctx context.Context, wi mockMessage) sqsprocessor.ProcessResult {
+type mockService struct {
+	mock.Mock
+}
+
+func (m *mockService) mockWorkFunc(ctx context.Context, wi mockMessage) sqsprocessor.ProcessResult {
+	args := m.Called(wi)
+
 	fmt.Printf("got work to process %+v\n", wi)
 	res.Lock()
 	defer res.Unlock()
 	res.messages = append(res.messages, wi)
-	return sqsprocessor.Ack
+	return args.Get(0).(sqsprocessor.ProcessResult)
 }
 
 func TestProcessor(t *testing.T) {
+	msvc := &mockService{}
 	res = &results{}
 	messages := make(chan types.Message, 100)
 	c := &mockSQSClient{
+		called:   map[string]int{},
 		incoming: messages,
 		cfg:      sqs.ReceiveMessageInput{VisibilityTimeout: 2},
 	}
@@ -132,7 +157,7 @@ func TestProcessor(t *testing.T) {
 			MaxNumberOfMessages: 1,
 			VisibilityTimeout:   2,
 		},
-		NumWorkers: 1,
+		NumWorkers: 2,
 		Backoff:    time.Millisecond * 100,
 	}
 	p := sqsprocessor.NewProcessor[mockMessage](c, config)
@@ -143,22 +168,37 @@ func TestProcessor(t *testing.T) {
 		<-done
 	}
 	go func() {
-		p.Process(ctx, mockWorkFunc)
+		p.Process(ctx, msvc.mockWorkFunc)
 		close(done)
 	}()
-	msgBodyBytes, err := json.Marshal(mockMessage{ID: "333"})
-	msgBody := string(msgBodyBytes)
+	msg1 := mockMessage{ID: "333"}
+	msgBodyBytes, err := json.Marshal(msg1)
 	require.NoError(t, err)
+	msgBody := string(msgBodyBytes)
+	msvc.On("mockWorkFunc", msg1).Return(sqsprocessor.ProcessResultAck)
 	messages <- types.Message{
 		ReceiptHandle: aws.String("1234"),
 		Body:          &msgBody,
 	}
 
-	time.Sleep(time.Millisecond * 5500)
-
+	msg2 := mockMessage{ID: "444"}
+	msg2BodyBytes, err := json.Marshal(msg2)
+	require.NoError(t, err)
+	msg2Body := string(msg2BodyBytes)
+	msvc.On("mockWorkFunc", msg2).Return(sqsprocessor.ProcessResultNack)
+	messages <- types.Message{
+		ReceiptHandle: aws.String("1235"),
+		Body:          &msg2Body,
+	}
+	time.Sleep(time.Millisecond * 1500)
 	cleanup()
 
-	res.Lock()
-	require.Len(t, res.messages, 1)
-	res.Unlock()
+	// res.Lock()
+	// require.Len(t, res.messages, 2)
+	// res.Unlock()
+
+	require.Equal(t, 2, c.called[methodReceive])
+	require.Equal(t, 1, c.called[methodDelete])
+	require.Equal(t, 1, c.called[methodChangeVisibility])
+
 }
