@@ -92,6 +92,7 @@ func NewProcessor[T any](c sqsClienter, config ProcessorConfig) *Processor[T] {
 }
 
 func (p *Processor[T]) Errors() <-chan error {
+	p.errs = make(chan error)
 	return p.errs
 }
 
@@ -131,7 +132,9 @@ func (p *Processor[T]) Process(ctx context.Context, pf ProcessFunc[T]) {
 			// TODO ticker?
 			res, err := p.c.ReceiveMessage(ctx, &p.config.Receive, p.config.ReceiveOptions...)
 			if err != nil {
-				p.errs <- err
+				if p.errs != nil {
+					p.errs <- err
+				}
 				continue
 			}
 			receiveTime := time.Now()
@@ -144,7 +147,9 @@ func (p *Processor[T]) Process(ctx context.Context, pf ProcessFunc[T]) {
 				err := json.Unmarshal([]byte(*msg.Body), &b)
 				if err != nil {
 					//TODO handle
-					p.errs <- err
+					if p.errs != nil {
+						p.errs <- err
+					}
 					continue
 				}
 				fmt.Printf("got message %v\n", b)
@@ -188,7 +193,9 @@ func (p *Processor[T]) cleanup(ctx context.Context) {
 					ReceiptHandle: &res.ReceiptHandle,
 				})
 				if err != nil {
-					p.errs <- err
+					if p.errs != nil {
+						p.errs <- err
+					}
 				}
 			case Nack:
 				// logging?
@@ -200,7 +207,9 @@ func (p *Processor[T]) cleanup(ctx context.Context) {
 					VisibilityTimeout: 0,
 				})
 				if err != nil {
-					p.errs <- err
+					if p.errs != nil {
+						p.errs <- err
+					}
 				}
 			}
 		case <-ctx.Done():
