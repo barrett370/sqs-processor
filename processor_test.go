@@ -64,9 +64,9 @@ out:
 			m.inflight = append(m.inflight, msg)
 			go func() {
 				<-time.After(time.Duration(m.cfg.VisibilityTimeout) * time.Second)
-				println("republishing message")
 				found := m.deleteInflight(*msg.ReceiptHandle)
 				if found {
+					println("republishing message")
 					m.incoming <- msg
 				}
 			}()
@@ -104,28 +104,44 @@ func (m *mockSQSClient) ChangeMessageVisibility(ctx context.Context, params *sqs
 	return nil, nil
 }
 
+type results struct {
+	sync.Mutex
+	messages []mockMessage
+}
+
+var res *results
+
 func mockWorkFunc(ctx context.Context, wi mockMessage) sqsprocessor.ProcessResult {
 	fmt.Printf("got work to process %+v\n", wi)
+	res.Lock()
+	defer res.Unlock()
+	res.messages = append(res.messages, wi)
 	return sqsprocessor.Ack
 }
 
 func TestProcessor(t *testing.T) {
+	res = &results{}
 	messages := make(chan types.Message, 100)
 	c := &mockSQSClient{
 		incoming: messages,
-		cfg:      sqs.ReceiveMessageInput{VisibilityTimeout: 1},
+		cfg:      sqs.ReceiveMessageInput{VisibilityTimeout: 2},
 	}
 	config := sqsprocessor.ProcessorConfig{
 		Receive: sqs.ReceiveMessageInput{
 			WaitTimeSeconds:     1,
 			MaxNumberOfMessages: 1,
-			VisibilityTimeout:   1,
+			VisibilityTimeout:   2,
 		},
 		NumWorkers: 1,
+		Backoff:    time.Millisecond * 100,
 	}
 	p := sqsprocessor.NewProcessor[mockMessage](c, config)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
+	cleanup := func() {
+		cancel()
+		<-done
+	}
 	go func() {
 		p.Process(ctx, mockWorkFunc)
 		close(done)
@@ -138,8 +154,11 @@ func TestProcessor(t *testing.T) {
 		Body:          &msgBody,
 	}
 
-	time.Sleep(time.Second * 1)
+	time.Sleep(time.Millisecond * 5500)
 
-	cancel()
-	<-done
+	cleanup()
+
+	res.Lock()
+	require.Len(t, res.messages, 1)
+	res.Unlock()
 }

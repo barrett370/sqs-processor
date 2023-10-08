@@ -10,30 +10,24 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 )
 
-type WorkItemMetadata struct {
+type workItemMetadata struct {
 	ReceiptHandle string
 	Deadline      time.Time
 }
 
-type WorkItem[T any] struct {
-	WorkItemMetadata
+type workItem[T any] struct {
+	workItemMetadata
 	Body T
 }
 
-type WorkItemResult struct {
+type workItemResult struct {
 	ProcessResult
-	WorkItemMetadata
-}
-
-type ProcessorConfig struct {
-	NumWorkers     int
-	Receive        sqs.ReceiveMessageInput
-	ReceiveOptions []func(*sqs.Options)
+	workItemMetadata
 }
 
 type worker[T any] struct {
-	work    <-chan WorkItem[T]
-	results chan<- WorkItemResult
+	work    <-chan workItem[T]
+	results chan<- workItemResult
 	f       ProcessFunc[T]
 }
 
@@ -45,9 +39,9 @@ func (w *worker[T]) Start(ctx context.Context) {
 			fctx, cancel := context.WithDeadline(ctx, msg.Deadline)
 			res := w.f(fctx, msg.Body)
 			cancel()
-			w.results <- WorkItemResult{
+			w.results <- workItemResult{
 				ProcessResult:    res,
-				WorkItemMetadata: msg.WorkItemMetadata,
+				workItemMetadata: msg.workItemMetadata,
 			}
 		case <-ctx.Done():
 			fmt.Println("stopping worker")
@@ -62,11 +56,19 @@ type sqsClienter interface {
 	ChangeMessageVisibility(ctx context.Context, params *sqs.ChangeMessageVisibilityInput, optFns ...func(*sqs.Options)) (*sqs.ChangeMessageVisibilityOutput, error)
 }
 
+type ProcessorConfig struct {
+	NumWorkers int
+	// TODO abstract these?
+	Receive        sqs.ReceiveMessageInput
+	ReceiveOptions []func(*sqs.Options)
+	Backoff        time.Duration
+}
+
 type Processor[T any] struct {
-	c       sqsClienter
+	client  sqsClienter
 	config  ProcessorConfig
-	work    chan WorkItem[T]
-	results chan WorkItemResult
+	work    chan workItem[T]
+	results chan workItemResult
 	errs    chan error
 }
 
@@ -80,11 +82,11 @@ const (
 type ProcessFunc[T any] func(ctx context.Context, msg T) ProcessResult
 
 func NewProcessor[T any](c sqsClienter, config ProcessorConfig) *Processor[T] {
-	work := make(chan WorkItem[T], config.NumWorkers)
-	results := make(chan WorkItemResult)
+	work := make(chan workItem[T], config.NumWorkers)
+	results := make(chan workItemResult)
 
 	return &Processor[T]{
-		c:       c,
+		client:  c,
 		config:  config,
 		work:    work,
 		results: results,
@@ -130,7 +132,8 @@ func (p *Processor[T]) Process(ctx context.Context, pf ProcessFunc[T]) {
 			return
 		default:
 			// TODO ticker?
-			res, err := p.c.ReceiveMessage(ctx, &p.config.Receive, p.config.ReceiveOptions...)
+			println("waiting for messages")
+			res, err := p.client.ReceiveMessage(ctx, &p.config.Receive, p.config.ReceiveOptions...)
 			if err != nil {
 				if p.errs != nil {
 					p.errs <- err
@@ -138,6 +141,14 @@ func (p *Processor[T]) Process(ctx context.Context, pf ProcessFunc[T]) {
 				continue
 			}
 			receiveTime := time.Now()
+
+			if len(res.Messages) == 0 {
+				if p.config.Backoff != 0 {
+					fmt.Printf("no messages received, backing off for %s\n", p.config.Backoff)
+					time.Sleep(p.config.Backoff)
+				}
+				continue
+			}
 
 			for _, msg := range res.Messages {
 				if msg.Body == nil || msg.ReceiptHandle == nil {
@@ -155,8 +166,8 @@ func (p *Processor[T]) Process(ctx context.Context, pf ProcessFunc[T]) {
 				fmt.Printf("got message %v\n", b)
 
 				select {
-				case p.work <- WorkItem[T]{
-					WorkItemMetadata: WorkItemMetadata{
+				case p.work <- workItem[T]{
+					workItemMetadata: workItemMetadata{
 						ReceiptHandle: *msg.ReceiptHandle,
 						Deadline:      deadline(p.config.Receive.VisibilityTimeout, receiveTime),
 					},
@@ -188,7 +199,7 @@ func (p *Processor[T]) cleanup(ctx context.Context) {
 			switch res.ProcessResult {
 			case Ack:
 				fmt.Printf("got result %v\n", res)
-				_, err := p.c.DeleteMessage(ctx, &sqs.DeleteMessageInput{
+				_, err := p.client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
 					QueueUrl:      p.config.Receive.QueueUrl,
 					ReceiptHandle: &res.ReceiptHandle,
 				})
@@ -201,7 +212,7 @@ func (p *Processor[T]) cleanup(ctx context.Context) {
 				// logging?
 
 				// make message instantly visible again
-				_, err := p.c.ChangeMessageVisibility(ctx, &sqs.ChangeMessageVisibilityInput{
+				_, err := p.client.ChangeMessageVisibility(ctx, &sqs.ChangeMessageVisibilityInput{
 					QueueUrl:          p.config.Receive.QueueUrl,
 					ReceiptHandle:     &res.ReceiptHandle,
 					VisibilityTimeout: 0,
