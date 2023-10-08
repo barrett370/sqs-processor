@@ -69,7 +69,8 @@ type Processor[T any] struct {
 	config  ProcessorConfig
 	work    chan workItem[T]
 	results chan workItemResult
-	errs    chan error
+	// TODO a better way to handle errors?
+	errs chan error
 }
 
 type ProcessResult uint8

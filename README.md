@@ -28,7 +28,9 @@ func (s *service) process(ctx context.Context, message messageBody) (ret sqsproc
 
 func main() {
     // initialise v2 sqs client
+    ...
     c := newClient() 
+
 	config := sqsprocessor.ProcessorConfig{
 		Receive: sqs.ReceiveMessageInput{
 			WaitTimeSeconds:     10,
@@ -38,6 +40,7 @@ func main() {
 		NumWorkers: 10,
 		Backoff:    time.Second,
 	}
+
 	p := sqsprocessor.NewProcessor[messageBody](c, config)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -49,7 +52,7 @@ func main() {
     }
 
 	go func() {
-		p.Process(ctx, process)
+		p.Process(ctx, svc.process)
 		close(done)
 	}()
 
