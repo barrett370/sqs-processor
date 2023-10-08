@@ -27,7 +27,8 @@ func (s *service) process(ctx context.Context, message messageBody) (ret sqsproc
 
 
 func main() {
-    c := newClient() // initialise v2 sqs client
+    // initialise v2 sqs client
+    c := newClient() 
 	config := sqsprocessor.ProcessorConfig{
 		Receive: sqs.ReceiveMessageInput{
 			WaitTimeSeconds:     10,
