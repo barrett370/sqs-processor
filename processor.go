@@ -2,7 +2,6 @@ package sqsprocessor
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -15,9 +14,9 @@ type workItemMetadata struct {
 	Deadline      time.Time
 }
 
-type workItem[T any] struct {
+type workItem struct {
 	workItemMetadata
-	Body T
+	Body string
 }
 
 type workItemResult struct {
@@ -25,13 +24,13 @@ type workItemResult struct {
 	workItemMetadata
 }
 
-type worker[T any] struct {
-	work    <-chan workItem[T]
+type worker struct {
+	work    <-chan workItem
 	results chan<- workItemResult
-	f       ProcessFunc[T]
+	f       ProcessFunc
 }
 
-func (w *worker[T]) Start(ctx context.Context) {
+func (w *worker) Start(ctx context.Context) {
 	for {
 		select {
 		case msg := <-w.work:
@@ -64,10 +63,10 @@ type ProcessorConfig struct {
 	Backoff        time.Duration
 }
 
-type Processor[T any] struct {
+type Processor struct {
 	client  sqsClienter
 	config  ProcessorConfig
-	work    chan workItem[T]
+	work    chan workItem
 	results chan workItemResult
 	// TODO a better way to handle errors?
 	errs chan error
@@ -80,13 +79,13 @@ const (
 	ProcessResultAck
 )
 
-type ProcessFunc[T any] func(ctx context.Context, msg T) ProcessResult
+type ProcessFunc func(ctx context.Context, msgBody string) ProcessResult
 
-func NewProcessor[T any](c sqsClienter, config ProcessorConfig) *Processor[T] {
-	work := make(chan workItem[T], config.NumWorkers)
+func NewProcessor(c sqsClienter, config ProcessorConfig) *Processor {
+	work := make(chan workItem, config.NumWorkers)
 	results := make(chan workItemResult)
 
-	return &Processor[T]{
+	return &Processor{
 		client:  c,
 		config:  config,
 		work:    work,
@@ -94,7 +93,7 @@ func NewProcessor[T any](c sqsClienter, config ProcessorConfig) *Processor[T] {
 	}
 }
 
-func (p *Processor[T]) Errors() <-chan error {
+func (p *Processor) Errors() <-chan error {
 	if p.errs == nil {
 		p.errs = make(chan error)
 	}
@@ -106,7 +105,7 @@ func deadline(visibilityTimeout int32, receiveTime time.Time) time.Time {
 	return receiveTime.Add(dur)
 }
 
-func (p *Processor[T]) Process(ctx context.Context, pf ProcessFunc[T]) {
+func (p *Processor) Process(ctx context.Context, pf ProcessFunc) {
 	var wg sync.WaitGroup
 	defer wg.Wait()
 
@@ -118,7 +117,7 @@ func (p *Processor[T]) Process(ctx context.Context, pf ProcessFunc[T]) {
 
 	wg.Add(p.config.NumWorkers)
 	for i := 0; i < p.config.NumWorkers; i++ {
-		w := &worker[T]{
+		w := &worker{
 			f:       pf,
 			work:    p.work,
 			results: p.results,
@@ -129,12 +128,16 @@ func (p *Processor[T]) Process(ctx context.Context, pf ProcessFunc[T]) {
 		}()
 	}
 
+	var backoff time.Duration = 0
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		default:
-			// TODO ticker?
+		case <-time.After(backoff):
+			// reset backoff
+			backoff = 0
+
 			println("waiting for messages")
 			res, err := p.client.ReceiveMessage(ctx, &p.config.Receive, p.config.ReceiveOptions...)
 			if err != nil {
@@ -146,10 +149,8 @@ func (p *Processor[T]) Process(ctx context.Context, pf ProcessFunc[T]) {
 			receiveTime := time.Now()
 
 			if len(res.Messages) == 0 {
-				if p.config.Backoff != 0 {
-					fmt.Printf("no messages received, backing off for %s\n", p.config.Backoff)
-					time.Sleep(p.config.Backoff)
-				}
+				fmt.Printf("no messages received, backing off for %s\n", p.config.Backoff)
+				backoff = p.config.Backoff
 				continue
 			}
 
@@ -157,24 +158,13 @@ func (p *Processor[T]) Process(ctx context.Context, pf ProcessFunc[T]) {
 				if msg.Body == nil || msg.ReceiptHandle == nil {
 					continue
 				}
-				var b T
-				err := json.Unmarshal([]byte(*msg.Body), &b)
-				if err != nil {
-					//TODO handle
-					if p.errs != nil {
-						p.errs <- err
-					}
-					continue
-				}
-				fmt.Printf("got message %v\n", b)
-
 				select {
-				case p.work <- workItem[T]{
+				case p.work <- workItem{
 					workItemMetadata: workItemMetadata{
 						ReceiptHandle: *msg.ReceiptHandle,
 						Deadline:      deadline(p.config.Receive.VisibilityTimeout, receiveTime),
 					},
-					Body: b,
+					Body: *msg.Body,
 				}:
 					fmt.Println("sent work")
 				case <-ctx.Done():
@@ -190,7 +180,7 @@ func (p *Processor[T]) Process(ctx context.Context, pf ProcessFunc[T]) {
 // cleanup listens for WorkItemResults and tidies them according to their ProcessResult
 // Ack - deleted from the queue
 // Nack - published back to the queue for re-attempt (or sending to DLQ, depending on queue configuration)
-func (p *Processor[T]) cleanup(ctx context.Context) {
+func (p *Processor) cleanup(ctx context.Context) {
 	for {
 		select {
 		case res := <-p.results:

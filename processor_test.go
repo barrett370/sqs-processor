@@ -132,7 +132,12 @@ type mockService struct {
 	mock.Mock
 }
 
-func (m *mockService) mockWorkFunc(ctx context.Context, wi mockMessage) sqsprocessor.ProcessResult {
+func (m *mockService) mockWorkFunc(ctx context.Context, msgBody string) sqsprocessor.ProcessResult {
+	var wi mockMessage
+	err := json.Unmarshal([]byte(msgBody), &wi)
+	if err != nil {
+		return sqsprocessor.ProcessResultNack
+	}
 	args := m.Called(wi)
 
 	fmt.Printf("got work to process %+v\n", wi)
@@ -160,7 +165,7 @@ func TestProcessor(t *testing.T) {
 		NumWorkers: 2,
 		Backoff:    time.Millisecond * 100,
 	}
-	p := sqsprocessor.NewProcessor[mockMessage](c, config)
+	p := sqsprocessor.NewProcessor(c, config)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	cleanup := func() {
