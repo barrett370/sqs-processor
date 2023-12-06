@@ -2,53 +2,14 @@ package sqsprocessor
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 )
 
-type workItemMetadata struct {
-	ReceiptHandle string
-	Deadline      time.Time
-}
-
 type processorCleanupFunc func(context.Context, workItemResult)
-
-type workItem struct {
-	workItemMetadata
-	cleanup processorCleanupFunc
-
-	Body string
-}
-
-type workItemResult struct {
-	ProcessResult
-	workItemMetadata
-}
-
-type worker struct {
-	work    <-chan workItem
-	results chan<- workItemResult
-	f       ProcessFunc
-}
-
-func (w *worker) Start(ctx context.Context) {
-	for {
-		select {
-		case msg := <-w.work:
-			fctx, cancel := context.WithDeadline(ctx, msg.Deadline)
-			res := w.f(fctx, msg.Body)
-			msg.cleanup(fctx, workItemResult{
-				ProcessResult:    res,
-				workItemMetadata: msg.workItemMetadata,
-			})
-			cancel()
-		case <-ctx.Done():
-			return
-		}
-	}
-}
 
 type sqsClienter interface {
 	ReceiveMessage(ctx context.Context, params *sqs.ReceiveMessageInput, optFns ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error)
@@ -65,10 +26,9 @@ type ProcessorConfig struct {
 }
 
 type Processor struct {
-	client  sqsClienter
-	config  ProcessorConfig
-	work    chan workItem
-	results chan workItemResult
+	client sqsClienter
+	config ProcessorConfig
+	work   chan workItem
 	// TODO a better way to handle errors?
 	errs chan error
 }
@@ -84,13 +44,11 @@ type ProcessFunc func(ctx context.Context, msgBody string) ProcessResult
 
 func NewProcessor(c sqsClienter, config ProcessorConfig) *Processor {
 	work := make(chan workItem, config.NumWorkers)
-	results := make(chan workItemResult)
 
 	return &Processor{
-		client:  c,
-		config:  config,
-		work:    work,
-		results: results,
+		client: c,
+		config: config,
+		work:   work,
 	}
 }
 
@@ -110,18 +68,11 @@ func (p *Processor) Process(ctx context.Context, pf ProcessFunc) {
 	var wg sync.WaitGroup
 	defer wg.Wait()
 
-	// wg.Add(1)
-	// go func() {
-	// 	defer wg.Done()
-	// 	p.cleanup(ctx)
-	// }()
-
 	wg.Add(p.config.NumWorkers)
 	for i := 0; i < p.config.NumWorkers; i++ {
 		w := &worker{
-			f:       pf,
-			work:    p.work,
-			results: p.results,
+			f:    pf,
+			work: p.work,
 		}
 		go func() {
 			defer wg.Done()
@@ -175,13 +126,27 @@ func (p *Processor) Process(ctx context.Context, pf ProcessFunc) {
 	}
 }
 
+type ErrMessageExpired struct {
+	receiptHandle string
+	expiredAt     time.Time
+}
+
+func (e ErrMessageExpired) Error() string {
+	return fmt.Sprintf("message has expired before cleanup finished, receiptHandle: %s, expired at: %s", e.receiptHandle, e.expiredAt)
+}
+
 // cleanup listens for WorkItemResults and tidies them according to their ProcessResult
 // Ack - deleted from the queue
 // Nack - published back to the queue for re-attempt (or sending to DLQ, depending on queue configuration)
 func (p *Processor) cleanup() func(ctx context.Context, res workItemResult) {
 	return func(ctx context.Context, res workItemResult) {
 		if time.Now().After(res.Deadline) {
-			// TODO what do?
+			if p.errs != nil {
+				p.errs <- ErrMessageExpired{
+					receiptHandle: res.ReceiptHandle,
+					expiredAt:     res.Deadline,
+				}
+			}
 			return
 		}
 		switch res.ProcessResult {
@@ -196,8 +161,6 @@ func (p *Processor) cleanup() func(ctx context.Context, res workItemResult) {
 				}
 			}
 		case ProcessResultNack:
-			// logging?
-
 			// make message instantly visible again
 			_, err := p.client.ChangeMessageVisibility(ctx, &sqs.ChangeMessageVisibilityInput{
 				QueueUrl:          p.config.Receive.QueueUrl,
