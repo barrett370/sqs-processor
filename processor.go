@@ -2,7 +2,6 @@ package sqsprocessor
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
@@ -14,8 +13,12 @@ type workItemMetadata struct {
 	Deadline      time.Time
 }
 
+type processorCleanupFunc func(context.Context, workItemResult)
+
 type workItem struct {
 	workItemMetadata
+	cleanup processorCleanupFunc
+
 	Body string
 }
 
@@ -34,16 +37,14 @@ func (w *worker) Start(ctx context.Context) {
 	for {
 		select {
 		case msg := <-w.work:
-			println("got work")
 			fctx, cancel := context.WithDeadline(ctx, msg.Deadline)
 			res := w.f(fctx, msg.Body)
-			cancel()
-			w.results <- workItemResult{
+			msg.cleanup(fctx, workItemResult{
 				ProcessResult:    res,
 				workItemMetadata: msg.workItemMetadata,
-			}
+			})
+			cancel()
 		case <-ctx.Done():
-			fmt.Println("stopping worker")
 			return
 		}
 	}
@@ -109,11 +110,11 @@ func (p *Processor) Process(ctx context.Context, pf ProcessFunc) {
 	var wg sync.WaitGroup
 	defer wg.Wait()
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		p.cleanup(ctx)
-	}()
+	// wg.Add(1)
+	// go func() {
+	// 	defer wg.Done()
+	// 	p.cleanup(ctx)
+	// }()
 
 	wg.Add(p.config.NumWorkers)
 	for i := 0; i < p.config.NumWorkers; i++ {
@@ -138,7 +139,6 @@ func (p *Processor) Process(ctx context.Context, pf ProcessFunc) {
 			// reset backoff
 			backoff = 0
 
-			println("waiting for messages")
 			res, err := p.client.ReceiveMessage(ctx, &p.config.Receive, p.config.ReceiveOptions...)
 			if err != nil {
 				if p.errs != nil {
@@ -149,7 +149,6 @@ func (p *Processor) Process(ctx context.Context, pf ProcessFunc) {
 			receiveTime := time.Now()
 
 			if len(res.Messages) == 0 {
-				fmt.Printf("no messages received, backing off for %s\n", p.config.Backoff)
 				backoff = p.config.Backoff
 				continue
 			}
@@ -160,15 +159,14 @@ func (p *Processor) Process(ctx context.Context, pf ProcessFunc) {
 				}
 				select {
 				case p.work <- workItem{
+					cleanup: p.cleanup(),
 					workItemMetadata: workItemMetadata{
 						ReceiptHandle: *msg.ReceiptHandle,
 						Deadline:      deadline(p.config.Receive.VisibilityTimeout, receiveTime),
 					},
 					Body: *msg.Body,
 				}:
-					fmt.Println("sent work")
 				case <-ctx.Done():
-					fmt.Println("context is done, returning", ctx.Err())
 					return
 				}
 			}
@@ -180,46 +178,37 @@ func (p *Processor) Process(ctx context.Context, pf ProcessFunc) {
 // cleanup listens for WorkItemResults and tidies them according to their ProcessResult
 // Ack - deleted from the queue
 // Nack - published back to the queue for re-attempt (or sending to DLQ, depending on queue configuration)
-func (p *Processor) cleanup(ctx context.Context) {
-	for {
-		select {
-		case res := <-p.results:
-			if time.Now().After(res.Deadline) {
-				// TODO what do?
-				fmt.Println("after deadline, skipping cleanup")
-				continue
-			}
-			switch res.ProcessResult {
-			case ProcessResultAck:
-				fmt.Printf("got result %v\n", res)
-				_, err := p.client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
-					QueueUrl:      p.config.Receive.QueueUrl,
-					ReceiptHandle: &res.ReceiptHandle,
-				})
-				if err != nil {
-					if p.errs != nil {
-						p.errs <- err
-					}
-				}
-			case ProcessResultNack:
-				// logging?
-
-				// make message instantly visible again
-				_, err := p.client.ChangeMessageVisibility(ctx, &sqs.ChangeMessageVisibilityInput{
-					QueueUrl:          p.config.Receive.QueueUrl,
-					ReceiptHandle:     &res.ReceiptHandle,
-					VisibilityTimeout: 0,
-				})
-				if err != nil {
-					if p.errs != nil {
-						p.errs <- err
-					}
-				}
-			}
-		case <-ctx.Done():
-			fmt.Printf("context done %v", ctx.Err())
+func (p *Processor) cleanup() func(ctx context.Context, res workItemResult) {
+	return func(ctx context.Context, res workItemResult) {
+		if time.Now().After(res.Deadline) {
+			// TODO what do?
 			return
 		}
+		switch res.ProcessResult {
+		case ProcessResultAck:
+			_, err := p.client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
+				QueueUrl:      p.config.Receive.QueueUrl,
+				ReceiptHandle: &res.ReceiptHandle,
+			})
+			if err != nil {
+				if p.errs != nil {
+					p.errs <- err
+				}
+			}
+		case ProcessResultNack:
+			// logging?
 
+			// make message instantly visible again
+			_, err := p.client.ChangeMessageVisibility(ctx, &sqs.ChangeMessageVisibilityInput{
+				QueueUrl:          p.config.Receive.QueueUrl,
+				ReceiptHandle:     &res.ReceiptHandle,
+				VisibilityTimeout: 0,
+			})
+			if err != nil {
+				if p.errs != nil {
+					p.errs <- err
+				}
+			}
+		}
 	}
 }

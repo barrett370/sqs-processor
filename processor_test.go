@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,15 +19,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type mockMessage struct {
-	ID string
-}
-
 const (
 	methodReceive          = "receive"
 	methodDelete           = "delete"
 	methodChangeVisibility = "change_visibility"
 )
+
+type mockMessage struct {
+	ID string
+}
 
 type mockSQSClient struct {
 	sync.Mutex
@@ -112,6 +114,7 @@ func (m *mockSQSClient) DeleteMessage(ctx context.Context, params *sqs.DeleteMes
 }
 
 func (m *mockSQSClient) ChangeMessageVisibility(ctx context.Context, params *sqs.ChangeMessageVisibilityInput, optFns ...func(*sqs.Options)) (*sqs.ChangeMessageVisibilityOutput, error) {
+	fmt.Printf("changing visibility of %s to %d", *params.ReceiptHandle, params.VisibilityTimeout)
 	m.incr(methodChangeVisibility)
 	select {
 	case <-ctx.Done():
@@ -205,5 +208,85 @@ func TestProcessor(t *testing.T) {
 	require.Equal(t, 2, c.called[methodReceive])
 	require.Equal(t, 1, c.called[methodDelete])
 	require.Equal(t, 1, c.called[methodChangeVisibility])
+
+}
+
+type benchSQSClient struct {
+	consumed *atomic.Int64
+}
+
+var (
+	benchBody   = "bench"
+	benchHandle = "123"
+)
+
+func (m *benchSQSClient) ReceiveMessage(ctx context.Context, params *sqs.ReceiveMessageInput, optFns ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error) {
+	var messages []types.Message
+	for i := 0; i < int(params.MaxNumberOfMessages); i++ {
+		messages = append(messages, types.Message{Body: &benchBody, ReceiptHandle: &benchHandle})
+	}
+	ret := &sqs.ReceiveMessageOutput{
+		Messages: messages[:params.MaxNumberOfMessages],
+	}
+	return ret, nil
+}
+
+func (m *benchSQSClient) DeleteMessage(ctx context.Context, params *sqs.DeleteMessageInput, optFns ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error) {
+	_ = m.consumed.Add(1)
+	return nil, nil
+}
+
+func (m *benchSQSClient) ChangeMessageVisibility(ctx context.Context, params *sqs.ChangeMessageVisibilityInput, optFns ...func(*sqs.Options)) (*sqs.ChangeMessageVisibilityOutput, error) {
+	return nil, nil
+}
+
+func benchWorkFunc(ctx context.Context, msgBody string) sqsprocessor.ProcessResult {
+	select {
+	case <-ctx.Done():
+		return sqsprocessor.ProcessResultNack
+	case <-time.After(time.Duration(rand.Intn(100)) * time.Millisecond):
+	}
+	return sqsprocessor.ProcessResultAck
+}
+
+func TestProcessorThroughput(t *testing.T) {
+
+	c := &benchSQSClient{
+		consumed: &atomic.Int64{},
+	}
+
+	testcases := []struct {
+		name   string
+		config sqsprocessor.ProcessorConfig
+	}{
+		{
+			name: "foo",
+			config: sqsprocessor.ProcessorConfig{
+				Receive: sqs.ReceiveMessageInput{
+					MaxNumberOfMessages: 10,
+					WaitTimeSeconds:     1,
+					VisibilityTimeout:   2,
+				},
+				NumWorkers: 100,
+			},
+		},
+	}
+
+	for _, tt := range testcases {
+		t.Run(tt.name, func(t *testing.T) {
+			p := sqsprocessor.NewProcessor(c, tt.config)
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			go func() {
+				p.Process(ctx, benchWorkFunc)
+				close(done)
+			}()
+			time.Sleep(time.Second * 1)
+			cancel()
+			<-done
+			fmt.Printf("processed %d messages\n", c.consumed.Load())
+			c.consumed.Store(0)
+		})
+	}
 
 }
