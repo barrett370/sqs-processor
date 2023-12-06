@@ -110,7 +110,7 @@ func (p *Processor) Process(ctx context.Context, pf ProcessFunc) {
 				}
 				select {
 				case p.work <- workItem{
-					cleanup: p.cleanup(),
+					cleanup: p.cleanup,
 					workItemMetadata: workItemMetadata{
 						ReceiptHandle: *msg.ReceiptHandle,
 						Deadline:      deadline(p.config.Receive.VisibilityTimeout, receiveTime),
@@ -138,39 +138,37 @@ func (e ErrMessageExpired) Error() string {
 // cleanup listens for WorkItemResults and tidies them according to their ProcessResult
 // Ack - deleted from the queue
 // Nack - published back to the queue for re-attempt (or sending to DLQ, depending on queue configuration)
-func (p *Processor) cleanup() func(ctx context.Context, res workItemResult) {
-	return func(ctx context.Context, res workItemResult) {
-		if time.Now().After(res.Deadline) {
-			if p.errs != nil {
-				p.errs <- ErrMessageExpired{
-					receiptHandle: res.ReceiptHandle,
-					expiredAt:     res.Deadline,
-				}
+func (p *Processor) cleanup(ctx context.Context, res workItemResult) {
+	if time.Now().After(res.Deadline) {
+		if p.errs != nil {
+			p.errs <- ErrMessageExpired{
+				receiptHandle: res.ReceiptHandle,
+				expiredAt:     res.Deadline,
 			}
-			return
 		}
-		switch res.ProcessResult {
-		case ProcessResultAck:
-			_, err := p.client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
-				QueueUrl:      p.config.Receive.QueueUrl,
-				ReceiptHandle: &res.ReceiptHandle,
-			})
-			if err != nil {
-				if p.errs != nil {
-					p.errs <- err
-				}
+		return
+	}
+	switch res.ProcessResult {
+	case ProcessResultAck:
+		_, err := p.client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
+			QueueUrl:      p.config.Receive.QueueUrl,
+			ReceiptHandle: &res.ReceiptHandle,
+		})
+		if err != nil {
+			if p.errs != nil {
+				p.errs <- err
 			}
-		case ProcessResultNack:
-			// make message instantly visible again
-			_, err := p.client.ChangeMessageVisibility(ctx, &sqs.ChangeMessageVisibilityInput{
-				QueueUrl:          p.config.Receive.QueueUrl,
-				ReceiptHandle:     &res.ReceiptHandle,
-				VisibilityTimeout: 0,
-			})
-			if err != nil {
-				if p.errs != nil {
-					p.errs <- err
-				}
+		}
+	case ProcessResultNack:
+		// make message instantly visible again
+		_, err := p.client.ChangeMessageVisibility(ctx, &sqs.ChangeMessageVisibilityInput{
+			QueueUrl:          p.config.Receive.QueueUrl,
+			ReceiptHandle:     &res.ReceiptHandle,
+			VisibilityTimeout: 0,
+		})
+		if err != nil {
+			if p.errs != nil {
+				p.errs <- err
 			}
 		}
 	}
