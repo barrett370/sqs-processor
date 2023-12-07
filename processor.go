@@ -11,7 +11,7 @@ import (
 
 type processorCleanupFunc func(context.Context, workItemResult)
 
-type sqsClienter interface {
+type SQSClienter interface {
 	ReceiveMessage(ctx context.Context, params *sqs.ReceiveMessageInput, optFns ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error)
 	DeleteMessage(ctx context.Context, params *sqs.DeleteMessageInput, optFns ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error)
 	ChangeMessageVisibility(ctx context.Context, params *sqs.ChangeMessageVisibilityInput, optFns ...func(*sqs.Options)) (*sqs.ChangeMessageVisibilityOutput, error)
@@ -26,7 +26,7 @@ type ProcessorConfig struct {
 }
 
 type Processor struct {
-	client sqsClienter
+	client SQSClienter
 	config ProcessorConfig
 	work   chan workItem
 	// TODO a better way to handle errors?
@@ -42,7 +42,7 @@ const (
 
 type ProcessFunc func(ctx context.Context, msgBody string) ProcessResult
 
-func NewProcessor(c sqsClienter, config ProcessorConfig) *Processor {
+func NewProcessor(c SQSClienter, config ProcessorConfig) *Processor {
 	work := make(chan workItem, config.NumWorkers)
 
 	return &Processor{
