@@ -168,7 +168,7 @@ func TestProcessor(t *testing.T) {
 		NumWorkers: 2,
 		Backoff:    time.Millisecond * 100,
 	}
-	p := sqsprocessor.NewProcessor(c, config)
+	p := sqsprocessor.New(c, config)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	cleanup := func() {
@@ -274,7 +274,7 @@ func TestProcessorThroughput(t *testing.T) {
 
 	for _, tt := range testcases {
 		t.Run(tt.name, func(t *testing.T) {
-			p := sqsprocessor.NewProcessor(c, tt.config)
+			p := sqsprocessor.New(c, tt.config)
 			ctx, cancel := context.WithCancel(context.Background())
 			done := make(chan struct{})
 			go func() {

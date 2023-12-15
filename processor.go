@@ -42,7 +42,7 @@ const (
 
 type ProcessFunc func(ctx context.Context, msgBody string) ProcessResult
 
-func NewProcessor(c SQSClienter, config ProcessorConfig) *Processor {
+func New(c SQSClienter, config ProcessorConfig) *Processor {
 	work := make(chan workItem, config.NumWorkers)
 
 	return &Processor{
