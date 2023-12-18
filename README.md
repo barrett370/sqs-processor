@@ -1,4 +1,4 @@
-# SQS Processor (WIP)
+# SQS Processor
 
 
 Attempt to wrap AWS SQS client with functionality similar to that of the gcloud pub/sub client.
@@ -12,17 +12,21 @@ The `ProcessFunc` must return either `ProcessResultAck` or `ProcessResultNack`. 
 ### Example 
 
 ```go
+import (
+    "context"
+    "time"
+
+    "github.com/barrett370/sqs-processor/middleware"
+    sqsprocessor "github.com/barrett370/sqs-processor"
+    "github.com/aws/aws-sdk-go-v2/service/sqs"
+)
+
 type messageBody struct {
     ID string
     Action EnumType
 }
 
-func (s *service) process(ctx context.Context, msgBody string) (ret sqsprocessor.ProcessResult) {
-    var message messageBody
-    err := json.Unmarshal([]byte(msgBody), &message)
-    if err != nil {
-        return
-    }
+func (s *service) process(ctx context.Context, message messageBody) (ret sqsprocessor.ProcessResult) {
     err := s.DoAction(message.ID, message.Action)
     if err == nil {
         ret = sqsprocessor.ProcessResultAck
@@ -56,11 +60,11 @@ func main() {
     }
 
 	go func() {
-		p.Process(ctx, svc.process)
+		p.Process(ctx, middleware.JSONDecode(svc.process))
 		close(done)
 	}()
 
-    ...
+    // some other code
 
     cleanup()
 }
