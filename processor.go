@@ -85,6 +85,9 @@ func (p *Processor) Process(ctx context.Context, pf ProcessFunc) {
 	for {
 		select {
 		case <-ctx.Done():
+			if p.errs != nil {
+				close(p.errs)
+			}
 			return
 		case <-time.After(backoff):
 			// reset backoff
