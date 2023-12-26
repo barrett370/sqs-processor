@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/xml"
+	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
 	sqsprocessor "github.com/barrett370/sqs-processor"
 )
@@ -11,9 +12,12 @@ import (
 type CustomProcessFunc[T any] func(context.Context, T) sqsprocessor.ProcessResult
 
 func JSONDecode[T any](processFunc CustomProcessFunc[T]) sqsprocessor.ProcessFunc {
-	return func(ctx context.Context, msgBody string) sqsprocessor.ProcessResult {
+	return func(ctx context.Context, msg types.Message) sqsprocessor.ProcessResult {
+		if msg.Body == nil {
+			return sqsprocessor.ProcessResultNack
+		}
 		var t T
-		err := json.Unmarshal([]byte(msgBody), &t)
+		err := json.Unmarshal([]byte(*msg.Body), &t)
 		if err != nil {
 			return sqsprocessor.ProcessResultNack
 		}
@@ -22,9 +26,12 @@ func JSONDecode[T any](processFunc CustomProcessFunc[T]) sqsprocessor.ProcessFun
 }
 
 func XMLDecode[T any](processFunc CustomProcessFunc[T]) sqsprocessor.ProcessFunc {
-	return func(ctx context.Context, msgBody string) sqsprocessor.ProcessResult {
+	return func(ctx context.Context, msg types.Message) sqsprocessor.ProcessResult {
+		if msg.Body == nil {
+			return sqsprocessor.ProcessResultNack
+		}
 		var t T
-		err := xml.Unmarshal([]byte(msgBody), &t)
+		err := xml.Unmarshal([]byte(*msg.Body), &t)
 		if err != nil {
 			return sqsprocessor.ProcessResultNack
 		}
