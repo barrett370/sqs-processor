@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/xml"
+
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
 	sqsprocessor "github.com/barrett370/sqs-processor"

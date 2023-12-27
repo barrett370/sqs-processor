@@ -2,9 +2,10 @@ package sqsprocessor
 
 import (
 	"context"
+	"time"
+
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"go.opentelemetry.io/otel/propagation"
-	"time"
 )
 
 type workItemMetadata struct {

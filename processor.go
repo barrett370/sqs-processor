@@ -3,9 +3,10 @@ package sqsprocessor
 import (
 	"context"
 	"fmt"
-	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"sync"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 )
