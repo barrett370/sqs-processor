@@ -5,7 +5,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
-	"github.com/aws/smithy-go/middleware"
 	sqsprocessor "github.com/barrett370/sqs-processor"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
@@ -16,20 +15,20 @@ type MessageAttributeValueCarrier struct {
 	values map[string]types.MessageAttributeValue
 }
 
-func NewMessageAttributeValueCarrier(init map[string]types.MessageAttributeValue) MessageAttributeValueCarrier {
-	return MessageAttributeValueCarrier{
+func NewMessageAttributeValueCarrier(init map[string]types.MessageAttributeValue) *MessageAttributeValueCarrier {
+	return &MessageAttributeValueCarrier{
 		values: init,
 	}
 }
 
-func (m MessageAttributeValueCarrier) Get(key string) string {
+func (m *MessageAttributeValueCarrier) Get(key string) string {
 	if ret := m.values[key].StringValue; ret != nil {
 		return *ret
 	}
 	return ""
 }
 
-func (m MessageAttributeValueCarrier) Set(key string, value string) {
+func (m *MessageAttributeValueCarrier) Set(key string, value string) {
 	if m.values == nil {
 		m.values = make(map[string]types.MessageAttributeValue)
 	}
@@ -39,16 +38,9 @@ func (m MessageAttributeValueCarrier) Set(key string, value string) {
 	}
 }
 
-func (m MessageAttributeValueCarrier) Keys() (keys []string) {
+func (m *MessageAttributeValueCarrier) Keys() (keys []string) {
 	for key := range m.values {
 		keys = append(keys, key)
-	}
-	return
-}
-
-func (m MessageAttributeValueCarrier) ToMetadata() (ret middleware.Metadata) {
-	for k, v := range m.values {
-		ret.Set(k, v)
 	}
 	return
 }
