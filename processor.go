@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
+
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 )
 
@@ -40,7 +42,7 @@ const (
 	ProcessResultAck
 )
 
-type ProcessFunc func(ctx context.Context, msgBody string) ProcessResult
+type ProcessFunc func(ctx context.Context, msg types.Message) ProcessResult
 
 func New(c SQSClienter, config ProcessorConfig) *Processor {
 	work := make(chan workItem, config.NumWorkers)
@@ -118,7 +120,7 @@ func (p *Processor) Process(ctx context.Context, pf ProcessFunc) {
 						ReceiptHandle: *msg.ReceiptHandle,
 						Deadline:      deadline(p.config.Receive.VisibilityTimeout, receiveTime),
 					},
-					Body: *msg.Body,
+					msg: msg,
 				}:
 				case <-ctx.Done():
 					return

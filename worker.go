@@ -3,6 +3,9 @@ package sqsprocessor
 import (
 	"context"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 type workItemMetadata struct {
@@ -14,7 +17,7 @@ type workItem struct {
 	workItemMetadata
 	cleanup processorCleanupFunc
 
-	Body string
+	msg types.Message
 }
 
 type workItemResult struct {
@@ -23,8 +26,10 @@ type workItemResult struct {
 }
 
 type worker struct {
-	work <-chan workItem
-	f    ProcessFunc
+	work       <-chan workItem
+	f          ProcessFunc
+	tracing    bool
+	propagator propagation.TextMapPropagator
 }
 
 func (w *worker) Start(ctx context.Context) {
@@ -32,7 +37,7 @@ func (w *worker) Start(ctx context.Context) {
 		select {
 		case msg := <-w.work:
 			fctx, cancel := context.WithDeadline(ctx, msg.Deadline)
-			res := w.f(fctx, msg.Body)
+			res := w.f(fctx, msg.msg)
 			msg.cleanup(fctx, workItemResult{
 				ProcessResult:    res,
 				workItemMetadata: msg.workItemMetadata,

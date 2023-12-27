@@ -135,9 +135,9 @@ type mockService struct {
 	mock.Mock
 }
 
-func (m *mockService) mockWorkFunc(ctx context.Context, msgBody string) sqsprocessor.ProcessResult {
+func (m *mockService) mockWorkFunc(ctx context.Context, msg types.Message) sqsprocessor.ProcessResult {
 	var wi mockMessage
-	err := json.Unmarshal([]byte(msgBody), &wi)
+	err := json.Unmarshal([]byte(*msg.Body), &wi)
 	if err != nil {
 		return sqsprocessor.ProcessResultNack
 	}
@@ -240,7 +240,7 @@ func (m *benchSQSClient) ChangeMessageVisibility(ctx context.Context, params *sq
 	return nil, nil
 }
 
-func benchWorkFunc(ctx context.Context, msgBody string) sqsprocessor.ProcessResult {
+func benchWorkFunc(ctx context.Context, msg types.Message) sqsprocessor.ProcessResult {
 	select {
 	case <-ctx.Done():
 		return sqsprocessor.ProcessResultNack
