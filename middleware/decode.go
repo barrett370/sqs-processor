@@ -11,6 +11,17 @@ import (
 
 type CustomProcessFunc[T any] func(context.Context, T) sqsprocessor.ProcessResult
 
+type Decoder[T any] func(processFunc CustomProcessFunc[T]) sqsprocessor.ProcessFunc
+
+func RawMessage(processFunc CustomProcessFunc[string]) sqsprocessor.ProcessFunc {
+	return func(ctx context.Context, msg types.Message) sqsprocessor.ProcessResult {
+		if msg.Body == nil {
+			return sqsprocessor.ProcessResultNack
+		}
+		return processFunc(ctx, *msg.Body)
+	}
+}
+
 func JSONDecode[T any](processFunc CustomProcessFunc[T]) sqsprocessor.ProcessFunc {
 	return func(ctx context.Context, msg types.Message) sqsprocessor.ProcessResult {
 		if msg.Body == nil {

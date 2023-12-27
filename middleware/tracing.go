@@ -7,7 +7,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/aws/smithy-go/middleware"
 	sqsprocessor "github.com/barrett370/sqs-processor"
-	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type MetadataCarrier struct {
@@ -51,12 +53,25 @@ func (m MetadataCarrier) ToMetadata() (ret middleware.Metadata) {
 	return
 }
 
-var defaultPropagator propagation.TraceContext
-
+// ContextFromMessageAttributes assumes the MetadataCarrier was used alongside a
+// propagation.TraceContext to inject a trace from the sender
 func ContextFromMessageAttributes(next sqsprocessor.ProcessFunc) sqsprocessor.ProcessFunc {
 	return func(ctx context.Context, msg types.Message) sqsprocessor.ProcessResult {
 		carrier := sqs.NewMessageAttributeValueCarrier(msg.MessageAttributes)
-		ctx = defaultPropagator.Extract(ctx, carrier)
-		return next(ctx, msg)
+		ctx = otel.GetTextMapPropagator().Extract(ctx, carrier)
+		span := trace.SpanFromContext(ctx)
+		defer span.End()
+		span.AddEvent("received message")
+		res := next(ctx, msg)
+
+		switch res {
+		case sqsprocessor.ProcessResultNack:
+			span.SetStatus(codes.Error, "error processing message")
+		case sqsprocessor.ProcessResultAck:
+			span.SetStatus(codes.Ok, "successfully processed message")
+		}
+
+		span.AddEvent("finished processing")
+		return res
 	}
 }

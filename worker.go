@@ -16,9 +16,7 @@ type workItem struct {
 	workItemMetadata
 	cleanup processorCleanupFunc
 
-	msg        types.Message
-	Body       string
-	Attributes map[string]types.MessageAttributeValue
+	msg types.Message
 }
 
 type workItemResult struct {

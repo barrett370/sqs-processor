@@ -119,9 +119,7 @@ func (p *Processor) Process(ctx context.Context, pf ProcessFunc) {
 						ReceiptHandle: *msg.ReceiptHandle,
 						Deadline:      deadline(p.config.Receive.VisibilityTimeout, receiveTime),
 					},
-					msg:        msg,
-					Body:       *msg.Body,
-					Attributes: msg.MessageAttributes,
+					msg: msg,
 				}:
 				case <-ctx.Done():
 					return
