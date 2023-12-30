@@ -13,6 +13,7 @@ import (
 
 type processorCleanupFunc func(context.Context, workItemResult)
 
+// SQSClienter encapsulates all sqs methods a Processor will use
 type SQSClienter interface {
 	ReceiveMessage(ctx context.Context, params *sqs.ReceiveMessageInput, optFns ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error)
 	DeleteMessage(ctx context.Context, params *sqs.DeleteMessageInput, optFns ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error)
@@ -27,6 +28,9 @@ type ProcessorConfig struct {
 	Backoff        time.Duration
 }
 
+// Processor is the struct which orchestrates polling
+// for messages as well as starting and feeding a configured
+// number of workers in a pool
 type Processor struct {
 	client SQSClienter
 	config ProcessorConfig
@@ -35,15 +39,26 @@ type Processor struct {
 	errs chan error
 }
 
+// ProcessResult is an enum used to signal success
+// or failure when processing a message in a ProcessFunc
 type ProcessResult uint8
 
 const (
+	// ProcessResultNack is the default value of ProcessResult
+	// and indicates processing of a message failed and the
+	// message should be re-published to the queue
 	ProcessResultNack ProcessResult = iota
+	// ProcessResultAck is the success variant of ProcessResult
+	// and indicates that a message was successfully processed
+	// and can be deleted from the queue
 	ProcessResultAck
 )
 
+// ProcessFunc is the signature of functions the Processor and
+// its workers can run on received messages
 type ProcessFunc func(ctx context.Context, msg types.Message) ProcessResult
 
+// New returns a pointer to a new Processor given a config and sqs client
 func New(c SQSClienter, config ProcessorConfig) *Processor {
 	work := make(chan workItem, config.NumWorkers)
 
@@ -54,6 +69,8 @@ func New(c SQSClienter, config ProcessorConfig) *Processor {
 	}
 }
 
+// Errors returns a channel on which errors encountered
+// by a Processor or Worker are sent
 func (p *Processor) Errors() <-chan error {
 	if p.errs == nil {
 		p.errs = make(chan error)
@@ -66,6 +83,9 @@ func deadline(visibilityTimeout int32, receiveTime time.Time) time.Time {
 	return receiveTime.Add(dur)
 }
 
+// Process starts all workers and polls for messages on the configured sqs queue
+// Any message received will have the given ProcessFunc executed on it
+// Process will exit when the provided context is cancelled
 func (p *Processor) Process(ctx context.Context, pf ProcessFunc) {
 	var wg sync.WaitGroup
 	defer wg.Wait()
@@ -78,7 +98,7 @@ func (p *Processor) Process(ctx context.Context, pf ProcessFunc) {
 		}
 		go func() {
 			defer wg.Done()
-			w.Start(ctx)
+			w.start(ctx)
 		}()
 	}
 
@@ -131,6 +151,9 @@ func (p *Processor) Process(ctx context.Context, pf ProcessFunc) {
 	}
 }
 
+// ErrMessageExpired is returned when a message
+// with an expired deadline is encountered and
+// processing is abandoned
 type ErrMessageExpired struct {
 	receiptHandle string
 	expiredAt     time.Time
