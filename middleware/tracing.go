@@ -11,10 +11,17 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// MessageAttributeValueCarrier implements opentelemetry's
+// propagation.TextMapCarrier interface for injecting and
+// extracting traces into sqs messages
 type MessageAttributeValueCarrier struct {
 	values map[string]types.MessageAttributeValue
 }
 
+// NewMessageAttributeValueCarrier returns a pointer to a
+// new MessageAttributeCarrier and can be initalised with
+// a map of string to types.MessageAttributeValue,
+// provide nil if using for injection
 func NewMessageAttributeValueCarrier(init map[string]types.MessageAttributeValue) *MessageAttributeValueCarrier {
 	return &MessageAttributeValueCarrier{
 		values: init,
