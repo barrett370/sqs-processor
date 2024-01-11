@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"go.opentelemetry.io/otel/propagation"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
@@ -55,6 +56,36 @@ func ContextFromMessageAttributes(next sqsprocessor.ProcessFunc) sqsprocessor.Pr
 		defer span.End()
 		span.AddEvent("received message")
 		res := next(ctx, msg)
+
+		switch res {
+		case sqsprocessor.ProcessResultNack:
+			span.SetStatus(codes.Error, "error processing message")
+		case sqsprocessor.ProcessResultAck:
+			span.SetStatus(codes.Ok, "successfully processed message")
+		}
+
+		span.AddEvent("finished processing")
+		return res
+	}
+}
+
+/*
+ContextFromMessageBody requires that the concrete message type implements the
+open telemetry propagation.TextMapCarrier interface, such as embedding the
+propagation.MapCarrier type: e.g.
+
+	type Message struct {
+		AField string `json:"a_field"`
+		propagation.MapCarrier `json:"trace"`
+	}
+*/
+func ContextFromMessageBody[T propagation.TextMapCarrier](next CustomProcessFunc[T]) CustomProcessFunc[T] {
+	return func(ctx context.Context, i T) sqsprocessor.ProcessResult {
+		ctx = otel.GetTextMapPropagator().Extract(ctx, i)
+		span := trace.SpanFromContext(ctx)
+		defer span.End()
+		span.AddEvent("received message")
+		res := next(ctx, i)
 
 		switch res {
 		case sqsprocessor.ProcessResultNack:
