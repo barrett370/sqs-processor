@@ -48,24 +48,26 @@ func (m *MessageAttributeValueCarrier) Keys() (keys []string) {
 
 // ContextFromMessageAttributes assumes the MessageAttributeValueCarrier was used alongside a
 // propagation.TraceContext to inject a trace from the sender
-func ContextFromMessageAttributes(next sqsprocessor.ProcessFunc) sqsprocessor.ProcessFunc {
-	return func(ctx context.Context, msg types.Message) sqsprocessor.ProcessResult {
-		carrier := NewMessageAttributeValueCarrier(msg.MessageAttributes)
-		ctx = otel.GetTextMapPropagator().Extract(ctx, carrier)
-		span := trace.SpanFromContext(ctx)
-		defer span.End()
-		span.AddEvent("received message")
-		res := next(ctx, msg)
+func ContextFromMessageAttributes(tracer trace.Tracer, spanName string) func(next sqsprocessor.ProcessFunc) sqsprocessor.ProcessFunc {
+	return func(next sqsprocessor.ProcessFunc) sqsprocessor.ProcessFunc {
+		return func(ctx context.Context, msg types.Message) sqsprocessor.ProcessResult {
+			carrier := NewMessageAttributeValueCarrier(msg.MessageAttributes)
+			ctx = otel.GetTextMapPropagator().Extract(ctx, carrier)
+			ctx, span := tracer.Start(ctx, spanName)
+			defer span.End()
+			span.AddEvent("received message")
+			res := next(ctx, msg)
 
-		switch res {
-		case sqsprocessor.ProcessResultNack:
-			span.SetStatus(codes.Error, "error processing message")
-		case sqsprocessor.ProcessResultAck:
-			span.SetStatus(codes.Ok, "successfully processed message")
+			switch res {
+			case sqsprocessor.ProcessResultNack:
+				span.SetStatus(codes.Error, "error processing message")
+			case sqsprocessor.ProcessResultAck:
+				span.SetStatus(codes.Ok, "successfully processed message")
+			}
+
+			span.AddEvent("finished processing")
+			return res
 		}
-
-		span.AddEvent("finished processing")
-		return res
 	}
 }
 
@@ -79,22 +81,24 @@ propagation.MapCarrier type: e.g.
 		propagation.MapCarrier `json:"trace"`
 	}
 */
-func ContextFromMessageBody[T propagation.TextMapCarrier](next CustomProcessFunc[T]) CustomProcessFunc[T] {
-	return func(ctx context.Context, i T) sqsprocessor.ProcessResult {
-		ctx = otel.GetTextMapPropagator().Extract(ctx, i)
-		span := trace.SpanFromContext(ctx)
-		defer span.End()
-		span.AddEvent("received message")
-		res := next(ctx, i)
+func ContextFromMessageBody[T propagation.TextMapCarrier](tracer trace.Tracer, spanName string) func(next CustomProcessFunc[T]) CustomProcessFunc[T] {
+	return func(next CustomProcessFunc[T]) CustomProcessFunc[T] {
+		return func(ctx context.Context, i T) sqsprocessor.ProcessResult {
+			ctx = otel.GetTextMapPropagator().Extract(ctx, i)
+			ctx, span := tracer.Start(ctx, spanName)
+			defer span.End()
+			span.AddEvent("received message")
+			res := next(ctx, i)
 
-		switch res {
-		case sqsprocessor.ProcessResultNack:
-			span.SetStatus(codes.Error, "error processing message")
-		case sqsprocessor.ProcessResultAck:
-			span.SetStatus(codes.Ok, "successfully processed message")
+			switch res {
+			case sqsprocessor.ProcessResultNack:
+				span.SetStatus(codes.Error, "error processing message")
+			case sqsprocessor.ProcessResultAck:
+				span.SetStatus(codes.Ok, "successfully processed message")
+			}
+
+			span.AddEvent("finished processing")
+			return res
 		}
-
-		span.AddEvent("finished processing")
-		return res
 	}
 }
