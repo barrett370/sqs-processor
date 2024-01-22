@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
-	"go.opentelemetry.io/otel/propagation"
 )
 
 type workItemMetadata struct {
@@ -26,10 +25,8 @@ type workItemResult struct {
 }
 
 type worker struct {
-	work       <-chan workItem
-	f          ProcessFunc
-	tracing    bool
-	propagator propagation.TextMapPropagator
+	work <-chan workItem
+	f    ProcessFunc
 }
 
 func (w *worker) Start(ctx context.Context) {

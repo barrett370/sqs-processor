@@ -2,13 +2,13 @@ package middleware
 
 import (
 	"context"
-	"go.opentelemetry.io/otel/propagation"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	sqsprocessor "github.com/barrett370/sqs-processor"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
 
