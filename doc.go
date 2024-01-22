@@ -49,7 +49,7 @@ The main structure is the Processor, which handles spawning, managing and feedin
 
 
 	sigC := make(chan os.Signal, 1)
-	signal.Notify(cancelChan, syscall.SIGTERM, syscall.SIGINT)
+	signal.Notify(sigC, syscall.SIGTERM, syscall.SIGINT)
 
 	<-sigC
 
