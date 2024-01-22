@@ -29,7 +29,7 @@ type worker struct {
 	f    ProcessFunc
 }
 
-func (w *worker) Start(ctx context.Context) {
+func (w *worker) start(ctx context.Context) {
 	for {
 		select {
 		case msg := <-w.work:

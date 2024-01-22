@@ -13,6 +13,7 @@ import (
 
 type processorCleanupFunc func(context.Context, workItemResult)
 
+// SQSClienter encapsulates all sqs methods a Processor will use
 type SQSClienter interface {
 	ReceiveMessage(ctx context.Context, params *sqs.ReceiveMessageInput, optFns ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error)
 	DeleteMessage(ctx context.Context, params *sqs.DeleteMessageInput, optFns ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error)
@@ -35,6 +36,9 @@ type ProcessorConfig struct {
 	ReceiveOptions []func(*sqs.Options)
 }
 
+// Processor is the struct which orchestrates polling
+// for messages as well as starting and feeding a configured
+// number of workers in a pool
 type Processor struct {
 	client SQSClienter
 	config ProcessorConfig
@@ -43,6 +47,8 @@ type Processor struct {
 	errs chan error
 }
 
+// ProcessResult is an enum used to signal success
+// or failure when processing a message in a ProcessFunc
 type ProcessResult uint8
 
 const (
@@ -69,6 +75,7 @@ const (
 // to process each message received off the queue
 type ProcessFunc func(ctx context.Context, msg types.Message) ProcessResult
 
+// New returns a pointer to a new Processor given a config and sqs client
 func New(c SQSClienter, config ProcessorConfig) *Processor {
 	work := make(chan workItem, config.NumWorkers)
 
@@ -115,7 +122,7 @@ func (p *Processor) Process(ctx context.Context, pf ProcessFunc) {
 		}
 		go func() {
 			defer wg.Done()
-			w.Start(ctx)
+			w.start(ctx)
 		}()
 	}
 
@@ -166,6 +173,9 @@ func (p *Processor) Process(ctx context.Context, pf ProcessFunc) {
 	}
 }
 
+// ErrMessageExpired is returned when a message
+// with an expired deadline is encountered and
+// processing is abandoned
 type ErrMessageExpired struct {
 	receiptHandle string
 	expiredAt     time.Time
