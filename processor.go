@@ -21,11 +21,19 @@ type SQSClienter interface {
 }
 
 type ProcessorConfig struct {
+	// NumWorkers is the number of worker
+	// goroutines spawned, managed and
+	// used by the Processor to process any
+	// received messages
 	NumWorkers int
+	// Backoff is the amount of time the
+	// Processor will block before polling
+	// for new messages if none were received
+	// in the previous call
+	Backoff time.Duration
 	// TODO abstract these?
 	Receive        sqs.ReceiveMessageInput
 	ReceiveOptions []func(*sqs.Options)
-	Backoff        time.Duration
 }
 
 // Processor is the struct which orchestrates polling
@@ -44,18 +52,27 @@ type Processor struct {
 type ProcessResult uint8
 
 const (
-	// ProcessResultNack is the default value of ProcessResult
-	// and indicates processing of a message failed and the
-	// message should be re-published to the queue
+	/*
+		ProcessResultNack indicates that the
+		ProcessFunc either does not want to
+		process a message or has failed to,
+		upon receiving this, the Processor
+		expedites the re-processing of the
+		message by making it visable in the queue
+	*/
 	ProcessResultNack ProcessResult = iota
-	// ProcessResultAck is the success variant of ProcessResult
-	// and indicates that a message was successfully processed
-	// and can be deleted from the queue
+	/*
+				ProcessResultAck indicates that the
+				ProcessFunc was successful in processing
+		 		the message. Upon receiving this,
+				the Processor deletes the message from
+				the queue to prevent re-delivery
+	*/
 	ProcessResultAck
 )
 
-// ProcessFunc is the signature of functions the Processor and
-// its workers can run on received messages
+// ProcessFunc is the signature of functions the user provides
+// to process each message received off the queue
 type ProcessFunc func(ctx context.Context, msg types.Message) ProcessResult
 
 // New returns a pointer to a new Processor given a config and sqs client
@@ -69,8 +86,12 @@ func New(c SQSClienter, config ProcessorConfig) *Processor {
 	}
 }
 
-// Errors returns a channel on which errors encountered
-// by a Processor or Worker are sent
+// Errors returns a channel to which any errors
+// encountered during processing are sent to.
+// If it has not been previously called, a new,
+// blocking channel is created. If you call this method,
+// make sure there is a goroutine cosuming from the
+// returned channel to prevent deadlock
 func (p *Processor) Errors() <-chan error {
 	if p.errs == nil {
 		p.errs = make(chan error)
@@ -83,9 +104,12 @@ func deadline(visibilityTimeout int32, receiveTime time.Time) time.Time {
 	return receiveTime.Add(dur)
 }
 
-// Process starts all workers and polls for messages on the configured sqs queue
-// Any message received will have the given ProcessFunc executed on it
-// Process will exit when the provided context is cancelled
+/*
+Process starts the processor and workers in the pool.
+It passes each message received to a worker in the pool
+which executes the given ProcessFunc.
+To stop processing, cancel the provided context
+*/
 func (p *Processor) Process(ctx context.Context, pf ProcessFunc) {
 	var wg sync.WaitGroup
 	defer wg.Wait()
@@ -117,9 +141,7 @@ func (p *Processor) Process(ctx context.Context, pf ProcessFunc) {
 
 			res, err := p.client.ReceiveMessage(ctx, &p.config.Receive, p.config.ReceiveOptions...)
 			if err != nil {
-				if p.errs != nil {
-					p.errs <- err
-				}
+				p.reportError(err)
 				continue
 			}
 			receiveTime := time.Now()
@@ -168,12 +190,10 @@ func (e ErrMessageExpired) Error() string {
 // Nack - published back to the queue for re-attempt (or sending to DLQ, depending on queue configuration)
 func (p *Processor) cleanup(ctx context.Context, res workItemResult) {
 	if time.Now().After(res.Deadline) {
-		if p.errs != nil {
-			p.errs <- ErrMessageExpired{
-				receiptHandle: res.ReceiptHandle,
-				expiredAt:     res.Deadline,
-			}
-		}
+		p.reportError(ErrMessageExpired{
+			receiptHandle: res.ReceiptHandle,
+			expiredAt:     res.Deadline,
+		})
 		return
 	}
 	switch res.ProcessResult {
@@ -183,9 +203,7 @@ func (p *Processor) cleanup(ctx context.Context, res workItemResult) {
 			ReceiptHandle: &res.ReceiptHandle,
 		})
 		if err != nil {
-			if p.errs != nil {
-				p.errs <- err
-			}
+			p.reportError(err)
 		}
 	case ProcessResultNack:
 		// make message instantly visible again
@@ -195,9 +213,14 @@ func (p *Processor) cleanup(ctx context.Context, res workItemResult) {
 			VisibilityTimeout: 0,
 		})
 		if err != nil {
-			if p.errs != nil {
-				p.errs <- err
-			}
+			p.reportError(err)
 		}
 	}
+}
+
+func (p *Processor) reportError(err error) {
+	if p.errs == nil {
+		return
+	}
+	p.errs <- err
 }
